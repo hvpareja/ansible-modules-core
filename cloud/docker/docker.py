@@ -1598,8 +1598,8 @@ class DockerManager(object):
                     pull_success = True
                     break
                 elif (status.startswith('Status: Downloaded newer image for') or
-                        status.startswith('Download complete')) or
-                      status.endswith('This registry version will not be supported in future versions of docker.')):
+                        status.startswith('Download complete') or
+                          status.endswith('This registry version will not be supported in future versions of docker.')):
                     # Image was updated. Increment the pull counter.
                     self.increment_counter('pulled')
                     pull_success = True
