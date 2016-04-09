@@ -61,7 +61,6 @@ options:
 extends_documentation_fragment:
     - aws
     - ec2
-author: "Lorin Hochstein (@lorin) <lorin@nimbisservices.com>"
 author: "Rick Mendes (@rickmendes) <rmendes@illumina.com>"
 notes:
    - This module will return C(public_ip) on success, which will contain the
@@ -280,7 +279,7 @@ def ensure_present(ec2, domain, address, device_id,
 
         changed = changed or assoc_result['changed']
 
-    return {'changed': changed, 'public_ip': address.public_ip}
+    return {'changed': changed, 'public_ip': address.public_ip, 'allocation_id': address.allocation_id}
 
 
 def ensure_absent(ec2, domain, address, device_id, check_mode, isinstance=True):
@@ -356,7 +355,7 @@ def main():
                                     module.check_mode, isinstance=is_instance)
             else:
                 address = allocate_address(ec2, domain, reuse_existing_ip_allowed)
-                result = {'changed': True, 'public_ip': address.public_ip}
+                result = {'changed': True, 'public_ip': address.public_ip, 'allocation_id': address.allocation_id}
         else:
             if device_id:
                 disassociated = ensure_absent(ec2, domain, address, device_id, module.check_mode, isinstance=is_instance)

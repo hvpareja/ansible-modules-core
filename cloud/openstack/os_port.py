@@ -30,10 +30,10 @@ extends_documentation_fragment: openstack
 author: "Davide Agnello (@dagnello)"
 version_added: "2.0"
 description:
-   - Add, Update or Remove ports from an OpenStack cloud.  A state=present,
-     will ensure the port is created or updated if required.
+   - Add, Update or Remove ports from an OpenStack cloud. A I(state) of
+     'present' will ensure the port is created or updated if required.
 options:
-    network:
+   network:
      description:
         - Network ID or name this port belongs to.
      required: true
@@ -61,8 +61,7 @@ options:
    security_groups:
      description:
         - Security group(s) ID(s) or name(s) associated with the port (comma
-          separated for multiple security groups - no spaces between comma(s)
-          or YAML list).
+          separated string or YAML list)
      required: false
      default: None
    no_security_groups:
@@ -72,22 +71,22 @@ options:
      default: False
    allowed_address_pairs:
      description:
-        - Allowed address pairs list.  Allowed address pairs are supported with
+        - "Allowed address pairs list.  Allowed address pairs are supported with
           dictionary structure.
           e.g.  allowed_address_pairs:
                   - ip_address: 10.1.0.12
                     mac_address: ab:cd:ef:12:34:56
-                  - ip_address: ...
+                  - ip_address: ..."
      required: false
      default: None
-   extra_dhcp_opt:
+   extra_dhcp_opts:
      description:
-        - Extra dhcp options to be assigned to this port.  Extra options are
+        - "Extra dhcp options to be assigned to this port.  Extra options are
           supported with dictionary structure.
-          e.g.  extra_dhcp_opt:
+          e.g.  extra_dhcp_opts:
                   - opt_name: opt name1
                     opt_value: value1
-                  - opt_name: ...
+                  - opt_name: ..."
      required: false
      default: None
    device_owner:
@@ -219,8 +218,8 @@ def _needs_update(module, port, cloud):
                       'device_owner',
                       'device_id']
     compare_dict = ['allowed_address_pairs',
-                    'extra_dhcp_opt']
-    compare_comma_separated_list = ['security_groups']
+                    'extra_dhcp_opts']
+    compare_list = ['security_groups']
 
     for key in compare_simple:
         if module.params[key] is not None and module.params[key] != port[key]:
@@ -229,7 +228,7 @@ def _needs_update(module, port, cloud):
         if module.params[key] is not None and cmp(module.params[key],
                                                   port[key]) != 0:
             return True
-    for key in compare_comma_separated_list:
+    for key in compare_list:
         if module.params[key] is not None and (set(module.params[key]) !=
                                                set(port[key])):
             return True
@@ -281,7 +280,7 @@ def _compose_port_args(module, cloud):
                            'mac_address',
                            'security_groups',
                            'allowed_address_pairs',
-                           'extra_dhcp_opt',
+                           'extra_dhcp_opts',
                            'device_owner',
                            'device_id']
     for optional_param in optional_parameters:
@@ -306,13 +305,13 @@ def main():
     argument_spec = openstack_full_argument_spec(
         network=dict(required=False),
         name=dict(required=False),
-        fixed_ips=dict(default=None),
-        admin_state_up=dict(default=None),
+        fixed_ips=dict(type='list', default=None),
+        admin_state_up=dict(type='bool', default=None),
         mac_address=dict(default=None),
-        security_groups=dict(default=None),
+        security_groups=dict(default=None, type='list'),
         no_security_groups=dict(default=False, type='bool'),
-        allowed_address_pairs=dict(default=None),
-        extra_dhcp_opt=dict(default=None),
+        allowed_address_pairs=dict(type='list', default=None),
+        extra_dhcp_opts=dict(type='list', default=None),
         device_owner=dict(default=None),
         device_id=dict(default=None),
         state=dict(default='present', choices=['absent', 'present']),
@@ -336,13 +335,11 @@ def main():
     try:
         cloud = shade.openstack_cloud(**module.params)
         if module.params['security_groups']:
-            if type(module.params['security_groups']) == str:
-                module.params['security_groups'] = module.params[
-                    'security_groups'].split(',')
             # translate security_groups to UUID's if names where provided
-            module.params['security_groups'] = map(
-                lambda v: get_security_group_id(module, cloud, v),
-                module.params['security_groups'])
+            module.params['security_groups'] = [
+                get_security_group_id(module, cloud, v)
+                for v in module.params['security_groups']
+            ]
 
         port = None
         network_id = None
@@ -386,7 +383,7 @@ def main():
             module.exit_json(changed=changed)
 
     except shade.OpenStackCloudException as e:
-        module.fail_json(msg=e.message)
+        module.fail_json(msg=str(e))
 
 # this is magic, see lib/ansible/module_common.py
 from ansible.module_utils.basic import *

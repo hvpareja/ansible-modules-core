@@ -19,7 +19,7 @@ DOCUMENTATION = '''
 module: iam
 short_description: Manage IAM users, groups, roles and keys
 description:
-     - Allows for the management of IAM users, groups, roles and access keys.
+     - Allows for the management of IAM users, user API keys, groups, roles.
 version_added: "2.0"
 options:
   iam_type:
@@ -27,7 +27,7 @@ options:
       - Type of IAM resource
     required: true
     default: null
-    choices: [ "user", "group", "role"]
+    choices: ["user", "group", "role"]
   name:
     description:
       - Name of IAM resource to create or identify
@@ -83,26 +83,12 @@ options:
     choices: ['always', 'on_create']
     description:
      - C(always) will update passwords if they differ.  C(on_create) will only set the password for newly created users.
-  aws_secret_key:
-    description:
-      - AWS secret key. If not set then the value of the AWS_SECRET_KEY environment variable is used.
-    required: false
-    default: null
-    aliases: [ 'ec2_secret_key', 'secret_key' ]
-  aws_access_key:
-    description:
-      - AWS access key. If not set then the value of the AWS_ACCESS_KEY environment variable is used.
-    required: false
-    default: null
-    aliases: [ 'ec2_access_key', 'access_key' ]
 notes:
   - 'Currently boto does not support the removal of Managed Policies, the module will error out if your user/group/role has managed policies when you try to do state=absent. They will need to be removed manually.'
 author:
     - "Jonathan I. Davila (@defionscode)"
     - "Paul Seiffert (@seiffert)"
-extends_documentation_fragment:
-    - aws
-    - ec2
+extends_documentation_fragment: aws
 '''
 
 EXAMPLES = '''
@@ -192,14 +178,24 @@ def create_user(module, iam, name, pwd, path, key_state, key_count):
 
 
 def delete_user(module, iam, name):
+    del_meta = ''
     try:
         current_keys = [ck['access_key_id'] for ck in
             iam.get_all_access_keys(name).list_access_keys_result.access_key_metadata]
         for key in current_keys:
             iam.delete_access_key(key, name)
-        del_meta = iam.delete_user(name).delete_user_response
-    except boto.exception.BotoServerError, err:
-        error_msg = boto_exception(err)
+        try:
+            login_profile = iam.get_login_profiles(name).get_login_profile_response
+        except boto.exception.BotoServerError, err:
+            error_msg = boto_exception(err)
+            if ('Cannot find Login Profile') in error_msg:
+
+               del_meta = iam.delete_user(name).delete_user_response
+            else:
+              iam.delete_login_profile(name)
+              del_meta = iam.delete_user(name).delete_user_response
+    except Exception as ex:
+        module.fail_json(changed=False, msg="delete failed %s" %ex)
         if ('must detach all policies first') in error_msg:
             for policy in iam.get_all_user_policies(name).list_user_policies_result.policy_names:
                 iam.delete_user_policy(name, policy)
@@ -213,7 +209,7 @@ def delete_user(module, iam, name):
                                                             "currently supported by boto. Please detach the polices "
                                                             "through the console and try again." % name)
                 else:
-                    module.fail_json(changed=changed, msg=str(err))
+                    module.fail_json(changed=changed, msg=str(error_msg))
             else:
                 changed = True
                 return del_meta, name, changed
@@ -565,7 +561,10 @@ def main():
     region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module)
 
     try:
-        iam = boto.iam.connection.IAMConnection(**aws_connect_kwargs)
+        if region:
+            iam = connect_to_aws(boto.iam, region, **aws_connect_kwargs)
+        else:
+            iam = boto.iam.connection.IAMConnection(**aws_connect_kwargs)
     except boto.exception.NoAuthHandlerFound, e:
         module.fail_json(msg=str(e))
 
@@ -647,15 +646,20 @@ def main():
             else:
                 module.exit_json(
                     changed=changed, groups=user_groups, user_name=name, keys=key_list)
+
         elif state == 'update' and not user_exists:
             module.fail_json(
-                msg="The user %s does not exit. No update made." % name)
+                msg="The user %s does not exist. No update made." % name)
+
         elif state == 'absent':
-            if name in orig_user_list:
-                set_users_groups(module, iam, name, '')
-                del_meta, name, changed = delete_user(module, iam, name)
-                module.exit_json(
-                    deletion_meta=del_meta, deleted_user=name, changed=changed)
+            if user_exists:
+                try:
+                   set_users_groups(module, iam, name, '')
+                   del_meta, name, changed = delete_user(module, iam, name)
+                   module.exit_json(deleted_user=name, changed=changed)
+
+                except Exception as ex:
+                       module.fail_json(changed=changed, msg=str(ex))
             else:
                 module.exit_json(
                     changed=False, msg="User %s is already absent from your AWS IAM users" % name)
@@ -687,9 +691,11 @@ def main():
             if not new_path and not new_name:
                 module.exit_json(
                     changed=changed, group_name=name, group_path=cur_path)
+
         elif state == 'update' and not group_exists:
             module.fail_json(
                 changed=changed, msg="Update Failed. Group %s doesn't seem to exit!" % name)
+
         elif state == 'absent':
             if name in orig_group_list:
                 removed_group, changed = delete_group(iam=iam, name=name)

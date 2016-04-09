@@ -24,7 +24,7 @@ description:
 options:
   command:
     description:
-      - Specifies the action to take.
+      - Specifies the action to take. The 'reboot' option is available starting at version 2.0
     required: true
     choices: [ 'create', 'replicate', 'delete', 'facts', 'modify' , 'promote', 'snapshot', 'reboot', 'restore' ]
   instance_name:
@@ -112,12 +112,14 @@ options:
     default: null
   port:
     description:
-      - Port number that the DB instance uses for connections.  Defaults to 3306 for mysql. Must be changed to 1521 for Oracle, 1433 for SQL Server, 5432 for PostgreSQL. Used only when command=create or command=replicate.
+      - Port number that the DB instance uses for connections. Used only when command=create or command=replicate.
+      - Prior to 2.0 it always defaults to null and the API would use 3306, it had to be set to other DB default values when not using MySql.
+        Starting at 2.0 it auotmaticaly defaults to what is expected for each c(db_engine).
     required: false
-    default: null
+    default: 3306 for mysql, 1521 for Oracle, 1433 for SQL Server, 5432 for PostgreSQL.
   upgrade:
     description:
-      - Indicates that minor version upgrades should be applied automatically. Used only when command=create or command=replicate. 
+      - Indicates that minor version upgrades should be applied automatically. Used only when command=create or command=replicate.
     required: false
     default: no
     choices: [ "yes", "no" ]
@@ -271,6 +273,33 @@ EXAMPLES = '''
     command: reboot
     instance_name: database
     wait: yes
+    
+# Restore a Postgres db instance from a snapshot, wait for it to become available again, and
+#  then modify it to add your security group. Also, display the new endpoint.
+#  Note that the "publicly_accessible" option is allowed here just as it is in the AWS CLI
+- local_action:
+     module: rds
+     command: restore
+     snapshot: mypostgres-snapshot
+     instance_name: MyNewInstanceName
+     region: us-west-2
+     zone: us-west-2b
+     subnet: default-vpc-xx441xxx
+     publicly_accessible: yes
+     wait: yes
+     wait_timeout: 600
+     tags:
+         Name: pg1_test_name_tag 
+  register: rds
+  
+- local_action:
+     module: rds
+     command: modify
+     instance_name: MyNewInstanceName
+     region: us-west-2
+     vpc_security_groups: sg-xxx945xx
+          
+- debug: msg="The new db endpoint is {{ rds.instance.endpoint }}"
 
 '''
 
@@ -289,6 +318,12 @@ try:
 except ImportError:
     has_rds2 = False
 
+DEFAULT_PORTS= {
+    'mysql': 3306,
+    'oracle': 1521,
+    'sqlserver': 1433,
+    'postgres': 5432,
+}
 
 class RDSException(Exception):
     def __init__(self, exc):
@@ -317,7 +352,7 @@ class RDSConnection:
             return None
 
     def get_db_snapshot(self, snapshotid):
-        try: 
+        try:
             return RDSSnapshot(self.connection.get_all_dbsnapshots(snapshot_id=snapshotid)[0])
         except boto.exception.BotoServerError, e:
             return None
@@ -802,13 +837,17 @@ def promote_db_instance(module, conn):
     instance_name = module.params.get('instance_name')
     
     result = conn.get_db_instance(instance_name)
+    if not result:
+        module.fail_json(msg="DB Instance %s does not exist" % instance_name)
+
     if result.get_data().get('replication_source'):
-        changed = False
-    else:
         try:
             result = conn.promote_read_replica(instance_name, **params)
+            changed = True
         except RDSException, e:
             module.fail_json(msg=e.message)
+    else:
+        changed = False
 
     if module.params.get('wait'):
         resource = await_resource(conn, result, 'available', module)
@@ -994,7 +1033,7 @@ def main():
             parameter_group   = dict(required=False),
             license_model     = dict(choices=['license-included', 'bring-your-own-license', 'general-public-license', 'postgresql-license'], required=False),
             multi_zone        = dict(type='bool', default=False),
-            iops              = dict(required=False), 
+            iops              = dict(required=False),
             security_groups   = dict(required=False),
             vpc_security_groups = dict(type='list', required=False),
             port              = dict(required=False),
@@ -1002,7 +1041,7 @@ def main():
             option_group      = dict(required=False),
             maint_window      = dict(required=False),
             backup_window     = dict(required=False),
-            backup_retention  = dict(required=False), 
+            backup_retention  = dict(required=False),
             zone              = dict(aliases=['aws_zone', 'ec2_zone'], required=False),
             subnet            = dict(required=False),
             wait              = dict(type='bool', default=False),
@@ -1040,6 +1079,14 @@ def main():
     if not region:
         module.fail_json(msg="Region not specified. Unable to determine region from EC2_REGION.")
 
+    # set port to per db defaults if not specified
+    if module.params['port'] is None and module.params['command'] in ['create', 'replicate']:
+        if '-' in module.params['db_engine']:
+            engine = module.params['db_engine'].split('-')[0]
+        else:
+            engine = module.params['db_engine']
+        module.params['port'] = DEFAULT_PORTS[engine.lower()]
+
     # connect to the rds endpoint
     if has_rds2:
         conn = RDS2Connection(module, region, **aws_connect_params)
@@ -1047,7 +1094,7 @@ def main():
         conn = RDSConnection(module, region, **aws_connect_params)
 
     invocations[module.params.get('command')](module, conn)
-        
+
 # import module snippets
 from ansible.module_utils.basic import *
 from ansible.module_utils.ec2 import *

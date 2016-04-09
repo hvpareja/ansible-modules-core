@@ -42,7 +42,8 @@ options:
    network_name:
      description:
         - Name of the network to which the subnet should be attached
-     required: true when state is 'present'
+        - requried when I(state) is 'present'
+     required: false
    name:
      description:
        - The name of the subnet that should be created. Although Neutron
@@ -52,8 +53,8 @@ options:
    cidr:
      description:
         - The CIDR representation of the subnet that should be assigned to
-          the subnet.
-     required: true when state is 'present'
+          the subnet. Required when I(state) is 'present'
+     required: false
      default: None
    ip_version:
      description:
@@ -302,7 +303,9 @@ def main():
                     changed = True
                 else:
                     changed = False
-            module.exit_json(changed=changed)
+            module.exit_json(changed=changed,
+                             subnet=subnet,
+                             id=subnet['id'])
 
         elif state == 'absent':
             if not subnet:
@@ -313,7 +316,7 @@ def main():
             module.exit_json(changed=changed)
 
     except shade.OpenStackCloudException as e:
-        module.fail_json(msg=e.message)
+        module.fail_json(msg=str(e))
 
 
 # this is magic, see lib/ansible/module_common.py

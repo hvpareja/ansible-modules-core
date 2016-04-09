@@ -395,7 +395,7 @@ class LinuxService(Service):
         location = dict()
 
         for binary in binaries:
-            location[binary] = self.module.get_bin_path(binary)
+            location[binary] = self.module.get_bin_path(binary, opt_dirs=paths)
 
         for initdir in initpaths:
             initscript = "%s/%s" % (initdir,self.name)
@@ -403,25 +403,31 @@ class LinuxService(Service):
                 self.svc_initscript = initscript
 
         def check_systemd():
-            # verify systemd is installed (by finding systemctl)
-            if not location.get('systemctl', False):
-                return False
 
-            # Check if init is the systemd command, using comm as cmdline could be symlink
-            try:
-                f = open('/proc/1/comm', 'r')
-            except IOError, err:
-                # If comm doesn't exist, old kernel, no systemd
-                return False
+            # tools must be installed
+            if location.get('systemctl',False):
 
-            for line in f:
-                if 'systemd' in line:
-                    return True
+                # this should show if systemd is the boot init system
+                # these mirror systemd's own sd_boot test http://www.freedesktop.org/software/systemd/man/sd_booted.html
+                for canary in ["/run/systemd/system/", "/dev/.run/systemd/", "/dev/.systemd/"]:
+                    if os.path.exists(canary):
+                        return True
+
+                # If all else fails, check if init is the systemd command, using comm as cmdline could be symlink
+                try:
+                    f = open('/proc/1/comm', 'r')
+                except IOError:
+                    # If comm doesn't exist, old kernel, no systemd
+                    return False
+
+                for line in f:
+                    if 'systemd' in line:
+                        return True
 
             return False
 
         # Locate a tool to enable/disable a service
-        if location.get('systemctl',False) and check_systemd():
+        if check_systemd():
             # service is managed by systemd
             self.__systemd_unit = self.name
             self.svc_cmd = location['systemctl']
@@ -465,8 +471,7 @@ class LinuxService(Service):
                 self.enable_cmd = location['chkconfig']
 
         if self.enable_cmd is None:
-            # exiting without change on non-existent service
-            self.module.exit_json(changed=False, exists=False)
+            self.module.fail_json(msg="no service or tool found for: %s" % self.name)
 
         # If no service control tool selected yet, try to see if 'service' is available
         if self.svc_cmd is None and location.get('service', False):
@@ -474,7 +479,7 @@ class LinuxService(Service):
 
         # couldn't find anything yet
         if self.svc_cmd is None and not self.svc_initscript:
-            self.module.exit_json(changed=False, exists=False)
+            self.module.fail_json(msg='cannot find \'service\' binary or init script for service,  possible typo in service name?, aborting')
 
         if location.get('initctl', False):
             self.svc_initctl = location['initctl']
@@ -699,7 +704,8 @@ class LinuxService(Service):
                 (rc, out, err) = self.execute_command("%s --list %s" % (self.enable_cmd, self.name))
             if not self.name in out:
                 self.module.fail_json(msg="service %s does not support chkconfig" % self.name)
-            state = out.split()[-1]
+            #TODO: look back on why this is here
+            #state = out.split()[-1]
 
             # Check if we're already in the correct state
             if "3:%s" % action in out and "5:%s" % action in out:
@@ -961,7 +967,6 @@ class FreeBsdService(Service):
                 self.rcconf_file = rcfile
 
         rc, stdout, stderr = self.execute_command("%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments))
-        cmd = "%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments)
         try:
             rcvars = shlex.split(stdout, comments=True)
         except:
@@ -1167,7 +1172,7 @@ class NetBsdService(Service):
     distribution = None
 
     def get_service_tools(self):
-        initpaths = [ '/etc/rc.d' ]		# better: $rc_directories - how to get in here? Run: sh -c '. /etc/rc.conf ; echo $rc_directories'
+        initpaths = [ '/etc/rc.d' ]  # better: $rc_directories - how to get in here? Run: sh -c '. /etc/rc.conf ; echo $rc_directories'
 
         for initdir in initpaths:
             initscript = "%s/%s" % (initdir,self.name)
@@ -1183,7 +1188,7 @@ class NetBsdService(Service):
         else:
             self.rcconf_value = "NO"
 
-        rcfiles = [ '/etc/rc.conf' ]		# Overkill?
+        rcfiles = [ '/etc/rc.conf' ]  # Overkill?
         for rcfile in rcfiles:
             if os.path.isfile(rcfile):
                 self.rcconf_file = rcfile

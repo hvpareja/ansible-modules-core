@@ -193,20 +193,20 @@ class Subversion(object):
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            dest=dict(required=True),
+            dest=dict(required=True, type='path'),
             repo=dict(required=True, aliases=['name', 'repository']),
             revision=dict(default='HEAD', aliases=['rev', 'version']),
             force=dict(default='no', type='bool'),
             username=dict(required=False),
             password=dict(required=False),
-            executable=dict(default=None),
+            executable=dict(default=None, type='path'),
             export=dict(default=False, required=False, type='bool'),
             switch=dict(default=True, required=False, type='bool'),
         ),
         supports_check_mode=True
     )
 
-    dest = os.path.expanduser(module.params['dest'])
+    dest = module.params['dest']
     repo = module.params['repo']
     revision = module.params['revision']
     force = module.params['force']
@@ -216,7 +216,10 @@ def main():
     export = module.params['export']
     switch = module.params['switch']
 
-    os.environ['LANG'] = 'C'
+    # We screenscrape a huge amount of svn commands so use C locale anytime we
+    # call run_command()
+    module.run_command_environ_update = dict(LANG='C', LC_ALL='C', LC_MESSAGES='C', LC_CTYPE='C')
+
     svn = Subversion(module, dest, repo, revision, username, password, svn_path)
 
     if export or not os.path.exists(dest):
