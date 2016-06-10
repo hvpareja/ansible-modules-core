@@ -26,8 +26,11 @@ DOCUMENTATION = '''
 module: docker
 version_added: "1.4"
 short_description: manage docker containers
+deprecated: In 2.2 use M(docker_container) and M(docker_image) instead.
 description:
-  - Manage the life cycle of docker containers.
+  - This is the original Ansible module for managing the Docker container life cycle.
+  - "NOTE: Additional and newer modules are available. For the latest on orchestrating containers with Ansible
+    visit our Getting Started with Docker Guide at https://github.com/ansible/ansible/blob/devel/docsite/rst/guide_docker.rst."
 options:
   count:
     description:
@@ -524,7 +527,12 @@ import sys
 import json
 import os
 import shlex
-from urlparse import urlparse
+try:
+    from urlparse import urlparse
+except ImportError:
+    # python3
+    from urllib.parse import urlparse
+
 try:
     import docker.client
     import docker.utils
@@ -585,13 +593,13 @@ def get_split_image_tag(image):
     else:
         registry, resource = None, image
 
-    # now we can determine if image has a tag
-    if ':' in resource:
-        resource, tag = resource.split(':', 1)
-        if registry:
-            resource = '/'.join((registry, resource))
-        if tag == "":
-            tag = "latest"
+    # now we can determine if image has a tag or a digest
+    for s in ['@',':']:
+        if s in resource:
+            resource, tag = resource.split(s, 1)
+            if registry:
+                resource = '/'.join((registry, resource))
+            break
     else:
         tag = "latest"
         resource = image
@@ -695,7 +703,7 @@ class DockerManager(object):
         self.binds = None
         self.volumes = None
         if self.module.params.get('volumes'):
-            self.binds = {}
+            self.binds = []
             self.volumes = []
             vols = self.module.params.get('volumes')
             for vol in vols:
@@ -713,7 +721,7 @@ class DockerManager(object):
                             self.module.fail_json(msg='invalid bind mode ' + parts[2])
                         else:
                             mode = parts[2]
-                    self.binds[parts[0]] = {'bind': parts[1], 'mode': mode }
+                    self.binds.append("%s:%s:%s" % (parts[0], parts[1], mode))
                 else:
                     self.module.fail_json(msg='volumes support 1 to 3 arguments')
 
@@ -736,10 +744,6 @@ class DockerManager(object):
         self.links = None
         if self.module.params.get('links'):
             self.links = self.get_links(self.module.params.get('links'))
-
-        env = self.module.params.get('env', None)
-        env_file = self.module.params.get('env_file', None)
-        self.environment = self.get_environment(env, env_file)
 
         self.ulimits = None
         if self.module.params.get('ulimits'):
@@ -838,6 +842,10 @@ class DockerManager(object):
                                     timeout=timeout)
 
         self.docker_py_versioninfo = get_docker_py_versioninfo()
+
+        env = self.module.params.get('env', None)
+        env_file = self.module.params.get('env_file', None)
+        self.environment = self.get_environment(env, env_file)
 
     def _check_capabilities(self):
         """
@@ -1366,14 +1374,8 @@ class DockerManager(object):
 
             expected_binds = set()
             if self.binds:
-                for host_path, config in self.binds.iteritems():
-                    if isinstance(config, dict):
-                        container_path = config['bind']
-                        mode = config['mode']
-                    else:
-                        container_path = config
-                        mode = 'rw'
-                    expected_binds.add("{0}:{1}:{2}".format(host_path, container_path, mode))
+                for bind in self.binds:
+                    expected_binds.add(bind)
 
             actual_binds = set()
             for bind in (container['HostConfig']['Binds'] or []):
@@ -1849,12 +1851,12 @@ def main():
             ports           = dict(required=False, default=None, type='list'),
             publish_all_ports = dict(default=False, type='bool'),
             volumes         = dict(default=None, type='list'),
-            volumes_from    = dict(default=None),
+            volumes_from    = dict(default=None, type='list'),
             links           = dict(default=None, type='list'),
             devices         = dict(default=None, type='list'),
-            memory_limit    = dict(default=0),
-            memory_swap     = dict(default=0),
-            cpu_shares      = dict(default=0),
+            memory_limit    = dict(default=0, type='int'),
+            memory_swap     = dict(default=0, type='int'),
+            cpu_shares      = dict(default=0, type='int'),
             docker_url      = dict(),
             use_tls         = dict(default=None, choices=['no', 'encrypt', 'verify']),
             tls_client_cert = dict(required=False, default=None, type='path'),

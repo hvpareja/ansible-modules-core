@@ -30,6 +30,9 @@ try:
 except ImportError:
     import simplejson as json
 
+import ansible.module_utils.six as six
+
+
 DOCUMENTATION = '''
 ---
 module: uri
@@ -221,7 +224,8 @@ def write_file(module, url, dest, content):
     f = open(tmpsrc, 'wb')
     try:
         f.write(content)
-    except Exception, err:
+    except Exception:
+        err = get_exception()
         os.remove(tmpsrc)
         module.fail_json(msg="failed to create temporary content file: %s" % str(err))
     f.close()
@@ -256,7 +260,8 @@ def write_file(module, url, dest, content):
     if checksum_src != checksum_dest:
         try:
             shutil.copyfile(tmpsrc, dest)
-        except Exception, err:
+        except Exception:
+            err = get_exception()
             os.remove(tmpsrc)
             module.fail_json(msg="failed to copy %s to %s: %s" % (tmpsrc, dest, str(err)))
 
@@ -264,7 +269,7 @@ def write_file(module, url, dest, content):
 
 
 def url_filename(url):
-    fn = os.path.basename(urlparse.urlsplit(url)[2])
+    fn = os.path.basename(six.moves.urllib.parse.urlsplit(url)[2])
     if fn == '':
         return 'index.html'
     return fn
@@ -279,7 +284,7 @@ def absolute_location(url, location):
         return location
 
     elif location.startswith('/'):
-        parts = urlparse.urlsplit(url)
+        parts = six.moves.urllib.parse.urlsplit(url)
         base = url.replace(parts[2], '')
         return '%s%s' % (base, location)
 
@@ -326,13 +331,18 @@ def uri(module, url, dest, body, body_format, method, headers, socket_timeout):
 
     resp, info = fetch_url(module, url, data=body, headers=headers,
                            method=method, timeout=socket_timeout)
-    r['redirected'] = redirected or info['url'] != url
-    r.update(redir_info)
-    r.update(info)
+
     try:
         content = resp.read()
     except AttributeError:
-        content = ''
+        # there was no content, but the error read()
+        # may have been stored in the info as 'body'
+        content = info.pop('body', '')
+
+    r['redirected'] = redirected or info['url'] != url
+    r.update(redir_info)
+    r.update(info)
+
     return r, content, dest
 
 
@@ -441,8 +451,7 @@ def main():
         if 'charset' in params:
             content_encoding = params['charset']
         u_content = unicode(content, content_encoding, errors='replace')
-        if content_type.startswith('application/json') or \
-                content_type.startswith('text/json'):
+        if 'application/json' in content_type or 'text/json' in content_type:
             try:
                 js = json.loads(u_content)
                 uresp['json'] = js

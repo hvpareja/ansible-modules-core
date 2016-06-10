@@ -34,7 +34,7 @@ options:
       - The ordered set of commands that should be configured in the
         section.  The commands must be the exact same commands as found
         in the device running-config.  Be sure to note the configuration
-        command syntanx as some commands are automatically modified by the
+        command syntax as some commands are automatically modified by the
         device config parser.
     required: true
   parents:
@@ -133,7 +133,7 @@ EXAMPLES = """
     replace: block
 
 - ios_config:
-    commands: "{{lookup('file', 'datcenter1.txt'}}"
+    commands: "{{lookup('file', 'datcenter1.txt')}}"
     parents: ['ip access-list test']
     before: ['no ip access-list test']
     replace: block
@@ -222,4 +222,3 @@ from ansible.module_utils.netcfg import *
 from ansible.module_utils.ios import *
 if __name__ == '__main__':
     main()
-

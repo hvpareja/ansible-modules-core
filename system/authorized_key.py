@@ -33,12 +33,10 @@ options:
     description:
       - The username on the remote host whose authorized_keys file will be modified
     required: true
-    default: null
   key:
     description:
       - The SSH public key(s), as a string or (since 1.9) url (https://github.com/username.keys)
     required: true
-    default: null
   path:
     description:
       - Alternate path to the authorized_keys file
@@ -82,13 +80,13 @@ options:
     version_added: "1.9"
   validate_certs:
     description:
-      - This only applies if using a https url as the source of the keys. If set to C(no), the SSL certificates will not be validated. 
-      - This should only set to C(no) used on personally controlled sites using self-signed certificates as it avoids verifying the source site. 
+      - This only applies if using a https url as the source of the keys. If set to C(no), the SSL certificates will not be validated.
+      - This should only set to C(no) used on personally controlled sites using self-signed certificates as it avoids verifying the source site.
       - Prior to 2.1 the code worked as if this was set to C(yes).
     required: false
     default: "yes"
     choices: ["yes", "no"]
-    version_added: "2.1" 
+    version_added: "2.1"
 author: "Ansible Core Team"
 '''
 
@@ -126,6 +124,14 @@ EXAMPLES = '''
 - authorized_key: user=root key="{{ item }}" state=present exclusive=yes
   with_file:
     - public_keys/doe-jane
+
+# Copies the key from the user who is running ansible to the remote machine
+- set_fact:
+    my_ssh_key: "{{ lookup('env','HOME') }}/.ssh/id_rsa.pub"
+
+- authorized_key: user=ubuntu key="{{ lookup('file', my_ssh_key) }}"
+  sudo: yes
+
 '''
 
 # Makes sure the public key line is present or absent in the user's .ssh/authorized_keys.
@@ -187,7 +193,8 @@ def keyfile(module, user, write=False, path=None, manage_dir=True):
 
     try:
         user_entry = pwd.getpwnam(user)
-    except KeyError, e:
+    except KeyError:
+        e = get_exception()
         if module.check_mode and path is None:
             module.fail_json(msg="Either user must exist or you must provide full path to key file in check mode")
         module.fail_json(msg="Failed to lookup user %s: %s" % (user, str(e)))
@@ -207,11 +214,11 @@ def keyfile(module, user, write=False, path=None, manage_dir=True):
 
     if manage_dir:
         if not os.path.exists(sshdir):
-            os.mkdir(sshdir, 0700)
+            os.mkdir(sshdir, int('0700', 8))
             if module.selinux_enabled():
                 module.set_default_selinux_context(sshdir, False)
         os.chown(sshdir, uid, gid)
-        os.chmod(sshdir, 0700)
+        os.chmod(sshdir, int('0700', 8))
 
     if not os.path.exists(keysfile):
         basedir = os.path.dirname(keysfile)
@@ -226,7 +233,7 @@ def keyfile(module, user, write=False, path=None, manage_dir=True):
 
     try:
         os.chown(keysfile, uid, gid)
-        os.chmod(keysfile, 0600)
+        os.chmod(keysfile, int('0600', 8))
     except OSError:
         pass
 
@@ -351,7 +358,8 @@ def writekeys(module, filename, keys):
             except:
                 key_line = key
             f.writelines(key_line)
-    except IOError, e:
+    except IOError:
+        e = get_exception()
         module.fail_json(msg="Failed to write to file %s: %s" % (tmp_path, str(e)))
     f.close()
     module.atomic_move(tmp_path, filename)

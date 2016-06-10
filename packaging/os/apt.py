@@ -112,7 +112,7 @@ options:
     version_added: "2.1"
   only_upgrade:
     description:
-      - Only install/upgrade a package it it is already installed.
+      - Only install/upgrade a package if it is already installed.
     required: false
     default: false
     version_added: "2.1"
@@ -263,13 +263,14 @@ def package_status(m, pkgname, version, cache, state):
                 provided_packages = cache.get_providing_packages(pkgname)
                 if provided_packages:
                     is_installed = False
+                    upgradable = False
                     # when virtual package providing only one package, look up status of target package
                     if cache.is_virtual_package(pkgname) and len(provided_packages) == 1:
                         package = provided_packages[0]
                         installed, upgradable, has_files = package_status(m, package.name, version, cache, state='install')
                         if installed:
                             is_installed = True
-                    return is_installed, True, False
+                    return is_installed, upgradable, False
                 m.fail_json(msg="No package matching '%s' is available" % pkgname)
             except AttributeError:
                 # python-apt version too old to detect virtual packages
@@ -370,6 +371,27 @@ def expand_pkgspec_from_fnmatches(m, pkgspec, cache):
             new_pkgspec.append(pkgspec_pattern)
     return new_pkgspec
 
+def parse_diff(output):
+    diff = output.splitlines()
+    try:
+        # check for start marker from aptitude
+        diff_start = diff.index('Resolving dependencies...')
+    except ValueError:
+        try:
+            # check for start marker from apt-get
+            diff_start = diff.index('Reading state information...')
+        except ValueError:
+            # show everything
+            diff_start = -1
+    try:
+        # check for end marker line from both apt-get and aptitude
+        diff_end = (i for i, item in enumerate(diff) if re.match('[0-9]+ (packages )?upgraded', item)).next()
+    except StopIteration:
+        diff_end = len(diff)
+    diff_start += 1
+    diff_end += 1
+    return {'prepared': '\n'.join(diff[diff_start:diff_end])}
+
 def install(m, pkgspec, cache, upgrade=False, default_release=None,
             install_recommends=None, force=False,
             dpkg_options=expand_dpkg_options(DPKG_OPTIONS),
@@ -436,12 +458,24 @@ def install(m, pkgspec, cache, upgrade=False, default_release=None,
             cmd += " --allow-unauthenticated"
 
         rc, out, err = m.run_command(cmd)
+        if m._diff:
+            diff = parse_diff(out)
+        else:
+            diff = {}
         if rc:
             return (False, dict(msg="'%s' failed: %s" % (cmd, err), stdout=out, stderr=err))
         else:
-            return (True, dict(changed=True, stdout=out, stderr=err))
+            return (True, dict(changed=True, stdout=out, stderr=err, diff=diff))
     else:
         return (True, dict(changed=False))
+
+def get_field_of_deb(m, deb_file, field="Version"):
+    cmd_dpkg = m.get_bin_path("dpkg", True)
+    cmd = cmd_dpkg + " --field %s %s" % (deb_file, field)
+    rc, stdout, stderr = m.run_command(cmd)
+    if rc != 0:
+        m.fail_json(msg="%s failed" % cmd, stdout=stdout, stderr=stderr)
+    return stdout.strip('\n')
 
 def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated, dpkg_options):
     changed=False
@@ -450,10 +484,17 @@ def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated
     for deb_file in debs.split(','):
         try:
             pkg = apt.debfile.DebPackage(deb_file)
-
-            # Check if it's already installed
-            if pkg.compare_to_version_in_cache() == pkg.VERSION_SAME:
-                continue
+            pkg_name = get_field_of_deb(m, deb_file, "Package")
+            pkg_version = get_field_of_deb(m, deb_file, "Version")
+            try:
+                installed_pkg = apt.Cache()[pkg_name]
+                installed_version = installed_pkg.installed.version
+                if package_version_compare(pkg_version, installed_version) == 0:
+                    # Does not need to down-/upgrade, move on to next package
+                    continue
+            except Exception:
+                # Must not be installed, continue with installation
+                pass
             # Check if package is installable
             if not pkg.check() and not force:
                 m.fail_json(msg=pkg._failure_string)
@@ -462,7 +503,8 @@ def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated
             # to install so they're all done in one shot
             deps_to_install.extend(pkg.missing_deps)
 
-        except Exception, e:
+        except Exception:
+            e = get_exception()
             m.fail_json(msg="Unable to install package: %s" % str(e))
 
         # and add this deb to the list of packages to install
@@ -491,17 +533,23 @@ def install_deb(m, debs, cache, force, install_recommends, allow_unauthenticated
             stdout = retvals["stdout"] + out
         else:
             stdout = out
+        if "diff" in retvals:
+            diff = retvals["diff"]
+            if 'prepared' in diff:
+                diff['prepared'] += '\n\n' + out
+        else:
+            diff = parse_diff(out)
         if "stderr" in retvals:
             stderr = retvals["stderr"] + err
         else:
             stderr = err
 
         if rc == 0:
-            m.exit_json(changed=True, stdout=stdout, stderr=stderr)
+            m.exit_json(changed=True, stdout=stdout, stderr=stderr, diff=diff)
         else:
             m.fail_json(msg="%s failed" % cmd, stdout=stdout, stderr=stderr)
     else:
-        m.exit_json(changed=changed, stdout=retvals.get('stdout',''), stderr=retvals.get('stderr',''))
+        m.exit_json(changed=changed, stdout=retvals.get('stdout',''), stderr=retvals.get('stderr',''), diff=retvals.get('diff', ''))
 
 def remove(m, pkgspec, cache, purge=False,
            dpkg_options=expand_dpkg_options(DPKG_OPTIONS), autoremove=False):
@@ -527,15 +575,21 @@ def remove(m, pkgspec, cache, purge=False,
         else:
             autoremove = ''
 
-        cmd = "%s -q -y %s %s %s remove %s" % (APT_GET_CMD, dpkg_options, purge, autoremove, packages)
-
         if m.check_mode:
-            m.exit_json(changed=True)
+            check_arg = '--simulate'
+        else:
+            check_arg = ''
+
+        cmd = "%s -q -y %s %s %s %s remove %s" % (APT_GET_CMD, dpkg_options, purge, autoremove, check_arg, packages)
 
         rc, out, err = m.run_command(cmd)
+        if m._diff:
+            diff = parse_diff(out)
+        else:
+            diff = {}
         if rc:
             m.fail_json(msg="'apt-get remove %s' failed: %s" % (packages, err), stdout=out, stderr=err)
-        m.exit_json(changed=True, stdout=out, stderr=err)
+        m.exit_json(changed=True, stdout=out, stderr=err, diff=diff)
 
 def upgrade(m, mode="yes", force=False, default_release=None,
             dpkg_options=expand_dpkg_options(DPKG_OPTIONS)):
@@ -577,11 +631,15 @@ def upgrade(m, mode="yes", force=False, default_release=None,
         cmd += " -t '%s'" % (default_release,)
 
     rc, out, err = m.run_command(cmd, prompt_regex=prompt_regex)
+    if m._diff:
+        diff = parse_diff(out)
+    else:
+        diff = {}
     if rc:
         m.fail_json(msg="'%s %s' failed: %s" % (apt_cmd, upgrade_command, err), stdout=out)
     if (apt_cmd == APT_GET_CMD and APT_GET_ZERO in out) or (apt_cmd == APTITUDE_CMD and APTITUDE_ZERO in out):
         m.exit_json(changed=False, msg=out, stdout=out, stderr=err)
-    m.exit_json(changed=True, msg=out, stdout=out, stderr=err)
+    m.exit_json(changed=True, msg=out, stdout=out, stderr=err, diff=diff)
 
 def download(module, deb):
     tempdir = os.path.dirname(__file__)
@@ -603,7 +661,8 @@ def download(module, deb):
             f.write(data)
         f.close()
         deb = package
-    except Exception, e:
+    except Exception:
+        e = get_exception()
         module.fail_json(msg="Failure downloading %s, %s" % (deb, e))
 
     return deb
@@ -616,7 +675,7 @@ def main():
             cache_valid_time = dict(type='int'),
             purge = dict(default=False, type='bool'),
             package = dict(default=None, aliases=['pkg', 'name'], type='list'),
-            deb = dict(default=None),
+            deb = dict(default=None, type='path'),
             default_release = dict(default=None, aliases=['default-release']),
             install_recommends = dict(default=None, aliases=['install-recommends'], type='bool'),
             force = dict(default='no', type='bool'),

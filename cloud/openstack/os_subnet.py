@@ -71,6 +71,12 @@ options:
         - The ip that would be assigned to the gateway for this subnet
      required: false
      default: None
+   no_gateway_ip:
+     description:
+        - The gateway IP would not be assigned for this subnet
+     required: false
+     default: false
+     version_added: "2.2"
    dns_nameservers:
      description:
         - List of DNS nameservers for this subnet.
@@ -105,6 +111,12 @@ options:
      choices: ['dhcpv6-stateful', 'dhcpv6-stateless', 'slaac']
      required: false
      default: None
+   project:
+     description:
+        - Project name or ID containing the subnet (name admin-only)
+     required: false
+     default: None
+     version_added: "2.1"
 requirements:
     - "python >= 2.6"
     - "shade"
@@ -164,7 +176,7 @@ def _can_update(subnet, module, cloud):
                                       subnet')
     if ip_version and subnet['ip_version'] != ip_version:
         module.fail_json(msg='Cannot update ip_version in existing subnet')
-    if ipv6_ra_mode and subnet.get('ipv6_ra_mode', None) != ip_version:
+    if ipv6_ra_mode and subnet.get('ipv6_ra_mode', None) != ipv6_ra_mode:
         module.fail_json(msg='Cannot update ipv6_ra_mode in existing subnet')
     if ipv6_a_mode and subnet.get('ipv6_address_mode', None) != ipv6_a_mode:
         module.fail_json(msg='Cannot update ipv6_address_mode in existing \
@@ -182,6 +194,7 @@ def _needs_update(subnet, module, cloud):
     pool_start = module.params['allocation_pool_start']
     pool_end = module.params['allocation_pool_end']
     gateway_ip = module.params['gateway_ip']
+    no_gateway_ip = module.params['no_gateway_ip']
     dns = module.params['dns_nameservers']
     host_routes = module.params['host_routes']
     curr_pool = subnet['allocation_pools'][0]
@@ -203,6 +216,8 @@ def _needs_update(subnet, module, cloud):
         new_hr = sorted(host_routes, key=lambda t: t.keys())
         if sorted(curr_hr) != sorted(new_hr):
             return True
+    if no_gateway_ip and subnet['gateway_ip']:
+        return True
     return False
 
 
@@ -226,6 +241,7 @@ def main():
         ip_version=dict(default='4', choices=['4', '6']),
         enable_dhcp=dict(default='true', type='bool'),
         gateway_ip=dict(default=None),
+        no_gateway_ip=dict(default=False, type='bool'),
         dns_nameservers=dict(default=None, type='list'),
         allocation_pool_start=dict(default=None),
         allocation_pool_end=dict(default=None),
@@ -233,6 +249,7 @@ def main():
         ipv6_ra_mode=dict(default=None, choice=ipv6_mode_choices),
         ipv6_address_mode=dict(default=None, choice=ipv6_mode_choices),
         state=dict(default='present', choices=['absent', 'present']),
+        project=dict(default=None)
     )
 
     module_kwargs = openstack_module_kwargs()
@@ -250,12 +267,14 @@ def main():
     enable_dhcp = module.params['enable_dhcp']
     subnet_name = module.params['name']
     gateway_ip = module.params['gateway_ip']
+    no_gateway_ip = module.params['no_gateway_ip']
     dns = module.params['dns_nameservers']
     pool_start = module.params['allocation_pool_start']
     pool_end = module.params['allocation_pool_end']
     host_routes = module.params['host_routes']
     ipv6_ra_mode = module.params['ipv6_ra_mode']
     ipv6_a_mode = module.params['ipv6_address_mode']
+    project = module.params.pop('project')
 
     # Check for required parameters when state == 'present'
     if state == 'present':
@@ -270,9 +289,22 @@ def main():
     else:
         pool = None
 
+    if no_gateway_ip and gateway_ip:
+        module.fail_json(msg='no_gateway_ip is not allowed with gateway_ip')
+
     try:
         cloud = shade.openstack_cloud(**module.params)
-        subnet = cloud.get_subnet(subnet_name)
+        if project is not None:
+            proj = cloud.get_project(project)
+            if proj is None:
+                module.fail_json(msg='Project %s could not be found' % project)
+            project_id = proj['id']
+            filters = {'tenant_id': project_id}
+        else:
+            project_id = None
+            filters = None
+
+        subnet = cloud.get_subnet(subnet_name, filters=filters)
 
         if module.check_mode:
             module.exit_json(changed=_system_state_change(module, subnet,
@@ -285,11 +317,13 @@ def main():
                                              enable_dhcp=enable_dhcp,
                                              subnet_name=subnet_name,
                                              gateway_ip=gateway_ip,
+                                             disable_gateway_ip=no_gateway_ip,
                                              dns_nameservers=dns,
                                              allocation_pools=pool,
                                              host_routes=host_routes,
                                              ipv6_ra_mode=ipv6_ra_mode,
-                                             ipv6_address_mode=ipv6_a_mode)
+                                             ipv6_address_mode=ipv6_a_mode,
+                                             tenant_id=project_id)
                 changed = True
             else:
                 if _needs_update(subnet, module, cloud):
@@ -297,6 +331,7 @@ def main():
                                         subnet_name=subnet_name,
                                         enable_dhcp=enable_dhcp,
                                         gateway_ip=gateway_ip,
+                                        disable_gateway_ip=no_gateway_ip,
                                         dns_nameservers=dns,
                                         allocation_pools=pool,
                                         host_routes=host_routes)

@@ -46,6 +46,7 @@ description:
   - 'When environment variables are managed: no comment line is added, but, when the module
     needs to find/check the state, it uses the "name" parameter to find the environment
     variable definition line.'
+  - 'When using symbols such as %, they must be properly escaped.'
 version_added: "0.9"
 options:
   name:
@@ -241,7 +242,7 @@ class CronTab(object):
                 f = open(self.cron_file, 'r')
                 self.lines = f.read().splitlines()
                 f.close()
-            except IOError, e:
+            except IOError:
                 # cron file does not exist
                 return
             except:
@@ -278,7 +279,7 @@ class CronTab(object):
             fileh = open(self.cron_file, 'w')
         else:
             filed, path = tempfile.mkstemp(prefix='crontab')
-            os.chmod(path, 0644)
+            os.chmod(path, int('0644', 8))
             fileh = os.fdopen(filed, 'w')
 
         fileh.write(self.render())
@@ -354,7 +355,7 @@ class CronTab(object):
         try:
             os.unlink(self.cron_file)
             return True
-        except OSError, e:
+        except OSError:
             # cron file does not exist
             return False
         except:
@@ -488,7 +489,7 @@ class CronTab(object):
                 return "chown %s %s ; su '%s' -c '%s %s'" % (pipes.quote(self.user), pipes.quote(path), pipes.quote(self.user), CRONCMD, pipes.quote(path))
             else:
                 user = '-u %s' % pipes.quote(self.user)
-        return "%s %s %s" % (CRONCMD , pipes.quote(path), user)
+        return "%s %s %s" % (CRONCMD , user, pipes.quote(path))
 
 
 
@@ -568,7 +569,7 @@ def main():
     res_args     = dict()
 
     # Ensure all files generated are only writable by the owning user.  Primarily relevant for the cron_file option.
-    os.umask(022)
+    os.umask(int('022', 8))
     crontab = CronTab(module, user, cron_file)
 
     module.debug('cron instantiated - name: "%s"' % name)
